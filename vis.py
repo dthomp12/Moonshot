@@ -78,6 +78,9 @@ def print_ev_analysis(
     for t in targets:
         p = reach[t]
         ev = reach.get(f"EV_{t}x", p * t - 1.0)
+        if ev > best_ev:
+            best_ev = ev
+            best_target = t
         probs.append(p)
         evs.append(ev)
 
@@ -133,6 +136,79 @@ def print_ev_analysis(
         fig.tight_layout()
         plt.show()
 
+
+def plot_starting_batter_distributions(
+    opt: Dict[str, Any],
+) -> None:
+    """Plot each starter's reach percentage and cash-out EV curves."""
+    starts = sorted(opt["all_starts"], key=lambda row: row["starting_idx"])
+    if not starts:
+        return
+
+    fig, (reach_axis, ev_axis) = plt.subplots(
+        2,
+        1,
+        figsize=(12, 9),
+        sharex=True,
+        gridspec_kw={"height_ratios": [1, 1]},
+    )
+    colors = plt.get_cmap("tab10")(np.linspace(0, 1, len(starts)))
+
+    for start, color in zip(starts, colors):
+        results = np.asarray(start["raw"])
+        targets = np.asarray(start["targets"], dtype=float)
+        probabilities = np.array([np.mean(results >= target) for target in targets])
+        ev = probabilities * targets - 1.0
+
+        label = f"{start['starting_idx']}: {start['batter_name']}"
+        reach_axis.plot(
+            targets,
+            probabilities * 100,
+            color=color,
+            linewidth=2,
+            marker="o",
+            markersize=3,
+            label=label,
+        )
+        ev_axis.plot(
+            targets,
+            ev,
+            color=color,
+            linewidth=2,
+            marker="o",
+            markersize=3,
+        )
+
+    # Plot profit line on reach plot
+    reach_axis.plot(
+        targets,
+        100 / targets,
+        color='k',
+        linewidth=1,
+        alpha=0.5,
+    )
+
+    reach_axis.set_ylabel("Reach probability (%)")
+    reach_axis.set_title("Percentage of simulations reaching or surpassing multiplier")
+    reach_axis.grid(True, alpha=0.25)
+    reach_axis.set_xscale('log')
+
+    ev_axis.axhline(0, color="gray", linestyle="--", linewidth=1)
+    ev_axis.set_xlabel("Multiplier")
+    ev_axis.set_ylabel("Cash-out EV")
+    ev_axis.set_title("Expected value at each cash-out multiplier")
+    ev_axis.grid(True, alpha=0.25)
+    ev_axis.set_xscale('log')
+
+    reach_axis.legend(loc="best", fontsize="small")
+    fig.suptitle(
+        f"Starting Batter Reach and EV vs {opt['pitcher_name']}",
+        fontsize=14,
+        fontweight="bold",
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    plt.show()
+
 def print_optimal_start_results(opt: Dict[str, Any]):
     """Print lineup ordered by starting position with max EV + best multiplier."""
     
@@ -154,6 +230,7 @@ def print_optimal_start_results(opt: Dict[str, Any]):
     table.add_column("Best EV", justify="right")
     table.add_column("At Mult", justify="right")
     table.add_column("Mean", justify="right")
+    table.add_column("Median", justify="right")
     table.add_column("P90", justify="right")
     table.add_column("P95", justify="right")
 
@@ -175,6 +252,7 @@ def print_optimal_start_results(opt: Dict[str, Any]):
             ev_str,
             f"{r['best_mult']}x",
             f"{r['mean']:.2f}",
+            f"{r['median']:.2f}",
             f"{r['p90']:.1f}",
             f"{r['p95']:.1f}",
             style="bold" if is_best else None,

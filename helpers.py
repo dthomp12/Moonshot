@@ -48,17 +48,19 @@ def rates_from_counts(
 def shrink_rates(
     observed: Dict[str, float],
     PA: float,
-    prior_strength: float = 40.0,
+    final_pas: float = 100.0,
     prior: Dict[str, float] = LEAGUE_RATES,
 ) -> Dict[str, float]:
     """Simple empirical-Bayes shrink toward a prior when sample is small."""
-    if PA >= 70:
+    if PA >= final_pas:
         return observed
 
     if prior is None:
         prior = LEAGUE_RATES
 
-    w_obs = PA / (PA + prior_strength)
+    num_prior_pas = max(0.0, final_pas - PA)
+
+    w_obs = PA / (PA + num_prior_pas)
     w_prior = 1.0 - w_obs
 
     shrunk = {

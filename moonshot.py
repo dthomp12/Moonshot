@@ -11,7 +11,7 @@ def simulate_moonshot_round(
     batters: List[Batter],
     starting_batter_idx: int = 0,
     rng: Optional[np.random.Generator] = None,
-    max_batters: int = 25,
+    max_batters: int = 20,
     use_expected: bool = True,
 ) -> Dict[str, Any]:
     """
@@ -75,7 +75,7 @@ def simulate_moonshot_round(
             if take == pitches_until_bonus and pitches_until_bonus > 0:
                 # We just hit the threshold → double for everything after
                 bonus_mult *= 2
-                next_bonus_at += 10
+                next_bonus_at += 15
 
         # Outcome is valued with the *final* bonus_mult that applies after all pitches
         outcome_val = OUTCOME_MULTIPLIERS.get(outcome, 0.0) * bonus_mult
@@ -163,6 +163,7 @@ def run_simulations(
 
     summary["reach"] = reach
     summary["raw"] = results          # keep the full array if you want histograms later
+    summary["targets"] = list(targets)
     return summary
 
 
@@ -188,7 +189,8 @@ def find_optimal_starting_batter(
     best_summary = None
 
     for start_idx in range(len(batters)):
-        print(f"Testing starting batter {start_idx}: {batters[start_idx].name}...")
+        batter_full = " ".join(batters[start_idx].name.split(", ")[::-1])
+        print(f"Testing starting batter {start_idx}: {batter_full}...")
 
         summary = run_simulations(
             pitcher=pitcher,
@@ -206,13 +208,15 @@ def find_optimal_starting_batter(
 
         results_by_start.append({
             "starting_idx": start_idx,
-            "batter_name": batters[start_idx].name,
+            "batter_name": batter_full,
             "best_ev": best_ev,
             "best_mult": best_mult,
             "mean": summary["mean"],
             "median": summary["median"],
             "p90": summary["p90"],
             "p95": summary["p95"],
+            "raw": summary["raw"],
+            "targets": summary["targets"],
         })
 
         if best_ev > best_score:

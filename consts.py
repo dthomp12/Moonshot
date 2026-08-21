@@ -1,11 +1,12 @@
+# To update, run the scraper script in scraper_helpers/pull_season_base_pitches.py and copy the output into this file.
 BASE_PITCHES = {
-    "K":   4.80,
-    "BB":  5.50,
-    "HBP": 4.10,
-    "1B":  3.3,
-    "XBH":  3.3,
-    "HR":  3.3,
-    "OUT": 3.3,
+    "K":   4.8527,
+    "BB":  5.75188,
+    "HBP": 3.09,
+    "1B":  3.3437,
+    "XBH":  3.3437,
+    "HR":  3.2703,
+    "OUT": 3.3934,
 }
 
 MIN_PITCHES = {
@@ -20,12 +21,12 @@ MIN_PITCHES = {
 
 # Default neutral prior (used for shrinking small samples)
 LEAGUE_RATES = {
-    "K": 0.22116, "BB": 0.089, "HBP": 0.0114,
-    "1B": 0.141, "XBH": 0.0446, "HR": 0.0305, "OUT": 0.4639
+    "K": 0.2211, "BB": 0.0892, "HBP": 0.0114,
+    "1B": 0.1414, "XBH": 0.0446, "HR": 0.0304, "OUT": 0.462
 }
 
-num_dubs = 5890
-num_trips = 511
+num_dubs = 5932
+num_trips = 513
 DOUBLE_TRIPLE_RATIO = num_dubs / (num_dubs + num_trips) # % of XBH that are doubles
 
 ###############################
