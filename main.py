@@ -8,9 +8,27 @@ from vis import (
 
 import numpy as np
 import argparse
+from unidecode import unidecode
 
 from scraper import make_batter_from_savant, make_pitcher_from_savant
 from live_game_scraper import get_current_lineups
+from consts import LEAGUE_RATES
+from player import LEAGUE_X_RATES
+
+
+def normalize_lineup_text(lineups):
+    for side in ["away", "home"]:
+        lineups[side]["team"] = unidecode(lineups[side]["team"])
+
+        pitcher_id, pitcher_name = lineups[side]["pitcher"]
+        lineups[side]["pitcher"] = (pitcher_id, unidecode(pitcher_name))
+
+        normalized_lineup = []
+        for batter_id, batter_name in lineups[side]["lineup"]:
+            normalized_lineup.append((batter_id, unidecode(batter_name)))
+        lineups[side]["lineup"] = normalized_lineup
+
+    return lineups
 
 def get_matchup(lineups, batting_side):
     pitching_side = "away" if batting_side == "home" else "home"
@@ -51,6 +69,7 @@ if __name__ == "__main__":
     batting_side = args.side
 
     lineups = get_current_lineups(team=team)
+    lineups = normalize_lineup_text(lineups)
 
     # Print both lineups
     for side in ["away", "home"]:
@@ -87,24 +106,22 @@ if __name__ == "__main__":
         for batter_id in lineup_ids
     ]
 
-    # Set this when expected league-rate priors are available.
-    expected_league_rates = None
-    shrink_expected = expected_league_rates is not None
+    shrink_expected = LEAGUE_X_RATES is not None
 
     pitcher.shrink(
-        prior=None,
+        prior=LEAGUE_RATES,
         final_pas=100,
         min_prior_pas=40,
-        x_prior=expected_league_rates,
+        x_prior=LEAGUE_X_RATES,
         shrink_expected=shrink_expected,
     )
 
     for batter in lineup:
         batter.shrink(
-            prior=None,
+            prior=LEAGUE_RATES,
             final_pas=100,
             min_prior_pas=40,
-            x_prior=expected_league_rates,
+            x_prior=LEAGUE_X_RATES,
             shrink_expected=shrink_expected,
         )
 
