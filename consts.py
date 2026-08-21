@@ -25,6 +25,17 @@ LEAGUE_RATES = {
     "1B": 0.1414, "XBH": 0.0446, "HR": 0.0304, "OUT": 0.462
 }
 
+# Optional league-level expected profile stats used to derive LEAGUE_X_RATES.
+# Fill these when available. Leave as None to fall back to observed LEAGUE_RATES.
+LEAGUE_X_PROFILE = {
+    "ba": 0.2438,
+    "xba": 0.2434,
+    "bacon": 0.3222,
+    "slg": 0.4013,
+    "xslg": 0.396,
+    "xbacon": 0.3242,
+}
+
 num_dubs = 5932
 num_trips = 513
 DOUBLE_TRIPLE_RATIO = num_dubs / (num_dubs + num_trips) # % of XBH that are doubles

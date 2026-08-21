@@ -2,8 +2,19 @@ from dataclasses import dataclass, field
 from typing import Dict, Optional, Tuple
 import numpy as np
 
-from helpers import shrink_rates, rates_from_counts, log5
-from consts import LEAGUE_RATES
+from helpers import shrink_rates, rates_from_counts, log5, build_expected_rates_from_profile
+from consts import LEAGUE_RATES, LEAGUE_X_PROFILE
+
+
+LEAGUE_X_RATES = build_expected_rates_from_profile(
+    observed_rates=LEAGUE_RATES,
+    ba=LEAGUE_X_PROFILE.get("ba"),
+    xba=LEAGUE_X_PROFILE.get("xba"),
+    bacon=LEAGUE_X_PROFILE.get("bacon"),
+    slg=LEAGUE_X_PROFILE.get("slg"),
+    xslg=LEAGUE_X_PROFILE.get("xslg"),
+    xbacon=LEAGUE_X_PROFILE.get("xbacon"),
+)
 
 @dataclass
 class Player:
@@ -83,79 +94,15 @@ class Player:
 
         Returns None if there is not enough expected information.
         """
-        has_contact_signal = any([
-            self.xbacon is not None,
-            self.xba is not None,
-            self.xslg is not None,
-        ])
-        if not has_contact_signal:
-            return None
-
-        # Start from observed rates
-        r = self.rates.copy()
-        k   = r["K"]
-        bb  = r["BB"]
-        hbp = r.get("HBP", 0.0)
-        contact = max(1e-9, 1.0 - k - bb - hbp)
-
-        # ----- 1. Decide target hit-rate on contact -----
-        if self.xbacon is not None:
-            target_hit_frac = self.xbacon
-        elif self.xba is not None and (1.0 - k) > 0:
-            # crude but usable conversion
-            target_hit_frac = self.xba / (1.0 - k)
-        else:
-            # fall back to observed
-            target_hit_frac = (r["1B"] + r["XBH"] + r["HR"]) / contact
-
-        target_hit_frac = float(np.clip(target_hit_frac, 0.05, 0.55))
-
-        # ----- 2. Scale the three hit types -----
-        obs_hits = r["1B"] + r["XBH"] + r["HR"]
-        obs_hit_frac = obs_hits / contact
-        scale = target_hit_frac / obs_hit_frac if obs_hit_frac > 1e-9 else 1.0
-
-        new_1b  = r["1B"]  * scale
-        new_xbh = r["XBH"] * scale
-        new_hr  = r["HR"]  * scale
-
-        # ----- 3. Extra power adjustment (SLG) -----
-        power_scale = 1.0
-
-        if self.xslg is not None and self.slg is not None and self.slg > 0:
-            power_scale = self.xslg / self.slg
-
-        power_scale = float(np.clip(power_scale, 0.6, 1.6))
-
-        # Apply extra scale only to extra-base hits
-        new_xbh *= power_scale
-        new_hr  *= power_scale
-
-        # Re-normalize the three hit types so total hit rate stays correct
-        hit_total = new_1b + new_xbh + new_hr
-        target_hits = target_hit_frac * contact
-        if hit_total > 1e-9:
-            factor = target_hits / hit_total
-            new_1b  *= factor
-            new_xbh *= factor
-            new_hr  *= factor
-
-        # ----- 4. Assemble final vector -----
-        new_rates = {
-            "K":   k,
-            "BB":  bb,
-            "HBP": hbp,
-            "1B":  max(0.0, new_1b),
-            "XBH": max(0.0, new_xbh),
-            "HR":  max(0.0, new_hr),
-            "OUT": max(0.0, contact - (new_1b + new_xbh + new_hr)),
-        }
-
-        # Final safety renormalization
-        total = sum(new_rates.values())
-        if total <= 0:
-            return None
-        return {k: v / total for k, v in new_rates.items()}
+        return build_expected_rates_from_profile(
+            observed_rates=self.rates,
+            ba=self.ba,
+            xba=self.xba,
+            bacon=self.bacon,
+            slg=self.slg,
+            xslg=self.xslg,
+            xbacon=self.xbacon,
+        )
 
     def get_rates(self, use_expected: bool = True) -> Dict[str, float]:
         if use_expected and self.x_rates is not None:
@@ -165,14 +112,33 @@ class Player:
     def shrink(
         self,
         prior: Optional[Dict[str, float]] = None,
-        prior_strength: float = 40.0,
+        final_pas: float = 40.0,
+        min_prior_pas: float = 0.0,
+        x_prior: Optional[Dict[str, float]] = None,
+        shrink_expected: bool = False,
     ) -> None:
-        """In-place empirical-Bayes shrink on both observed and expected rates."""
+        """
+        In-place empirical-Bayes shrink.
+
+        Default behavior shrinks observed rates only, then rebuilds expected rates from
+        expected metrics. If expected league priors are available, set
+        shrink_expected=True and pass x_prior.
+        """
         if prior is None:
             prior = LEAGUE_RATES
-        self.rates = shrink_rates(self.rates, self.pa, prior_strength, prior)
+        self.rates = shrink_rates(self.rates, self.pa, final_pas=final_pas, min_added_pas=min_prior_pas, prior=prior)
         if self.x_rates is not None:
-            self.x_rates = shrink_rates(self.x_rates, self.pa, prior_strength, prior)
+            if shrink_expected:
+                prior_for_expected = x_prior if x_prior is not None else prior
+                self.x_rates = shrink_rates(
+                    self.x_rates,
+                    self.pa,
+                    final_pas=final_pas,
+                    min_added_pas=min_prior_pas,
+                    prior=prior_for_expected,
+                )
+            else:
+                self.refresh_expected_rates()
 
     def refresh_expected_rates(self) -> None:
         """Call this if you mutate any of the x* attributes after construction."""
@@ -187,7 +153,7 @@ class Batter(Player):
 def matchup_rates(
     pitcher: Player,
     batter: Player,
-    league: Dict[str, float] = None,
+    league: Optional[Dict[str, float]] = None,
     use_expected: bool = True,
 ) -> Dict[str, float]:
     """
@@ -195,7 +161,10 @@ def matchup_rates(
     Applies log5 independently to each rate component, then renormalizes.
     """
     if league is None:
-        league = LEAGUE_RATES
+        if use_expected and LEAGUE_X_RATES is not None:
+            league = LEAGUE_X_RATES
+        else:
+            league = LEAGUE_RATES
 
     p_rates = pitcher.get_rates(use_expected)
     b_rates = batter.get_rates(use_expected)

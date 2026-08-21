@@ -1,19 +1,23 @@
 import numpy as np
 from typing import Dict, List, Optional, Any
+from concurrent.futures import ProcessPoolExecutor
 
 from consts import PITCH_VALUE, OUTCOME_MULTIPLIERS
 from player import Pitcher, Batter
-from sampling import sample_pa
+from sampling import MatchupParams, precompute_matchups, sample_pa, sample_pa_precomputed
 
 
 def simulate_moonshot_round(
     pitcher: Pitcher,
     batters: List[Batter],
+    matchups: Optional[List[MatchupParams]] = None,
     starting_batter_idx: int = 0,
     rng: Optional[np.random.Generator] = None,
-    max_batters: int = 20,
+    max_batters: int = 25,
     use_expected: bool = True,
-) -> Dict[str, Any]:
+    record_path: bool = False,
+    just_return_mult: bool = True,
+) -> Any:
     """
     Simulate one moonshot round.
 
@@ -27,7 +31,7 @@ def simulate_moonshot_round(
 
     multiplier = 0.0
     total_pitches = 0
-    path = []
+    path: Optional[List[Dict[str, Any]]] = [] if record_path else None
     bonus_mult = 1.0
     pitch_count = 0                 # cumulative pitches in the round
     next_bonus_at = 10
@@ -39,41 +43,38 @@ def simulate_moonshot_round(
     while batters_seen < max_batters:
         batter = batters[batter_idx % n_batters]
 
-        # ----- Sample the full PA using the new matchup logic -----
-        outcome, pitches = sample_pa(
-            pitcher,
-            batter,
-            rng,
-            use_expected=use_expected,
-        )
+        # ----- Sample the full PA using precomputed matchup params when available -----
+        if matchups is None:
+            outcome, pitches = sample_pa(
+                pitcher,
+                batter,
+                rng,
+                use_expected=use_expected,
+            )
+        else:
+            outcome, pitches = sample_pa_precomputed(
+                matchups[batter_idx % n_batters],
+                rng,
+            )
 
-        # ----- Split this PA around any bonus thresholds -----
-        remaining_pitches = pitches
         mult_added = 0.0
+        remaining = pitches
 
-        while remaining_pitches > 0:
-            pitches_until_bonus = next_bonus_at - pitch_count
+        while remaining > 0:
+            until_bonus = next_bonus_at - pitch_count
 
-            if pitches_until_bonus <= 0:
-                # Already at or past threshold (shouldn't normally happen)
-                take = remaining_pitches
-                current_bonus = bonus_mult
-            elif remaining_pitches <= pitches_until_bonus:
-                # Entire remaining portion is before the next threshold
-                take = remaining_pitches
-                current_bonus = bonus_mult
+            if remaining < until_bonus:
+                # We don't reach the threshold
+                mult_added += remaining * PITCH_VALUE * bonus_mult
+                pitch_count += remaining
+                remaining = 0
+
             else:
-                # We will cross the threshold during this PA
-                take = pitches_until_bonus
-                current_bonus = bonus_mult
+                # Reach the threshold
+                mult_added += until_bonus * PITCH_VALUE * bonus_mult
+                pitch_count += until_bonus
+                remaining -= until_bonus
 
-            # Add the pitch contribution at the *current* bonus
-            mult_added += take * PITCH_VALUE * current_bonus
-            pitch_count += take
-            remaining_pitches -= take
-
-            if take == pitches_until_bonus and pitches_until_bonus > 0:
-                # We just hit the threshold → double for everything after
                 bonus_mult *= 2
                 next_bonus_at += 15
 
@@ -84,13 +85,14 @@ def simulate_moonshot_round(
         # Record
         multiplier += mult_added
         total_pitches += pitches
-        path.append({
-            "batter": batter.name,
-            "outcome": outcome,
-            "pitches": pitches,
-            "mult_added": round(mult_added, 4),
-            "running_mult": round(multiplier, 4),
-        })
+        if path is not None:
+            path.append({
+                "batter": batter.name,
+                "outcome": outcome,
+                "pitches": pitches,
+                "mult_added": mult_added,
+                "running_mult": multiplier,
+            })
 
         # HR triggers an additional double for future actions
         if outcome == "HR":
@@ -103,12 +105,15 @@ def simulate_moonshot_round(
         batters_seen += 1
         batter_idx += 1
 
-    return {
-        "final_multiplier": round(multiplier, 4),
-        "total_pitches": total_pitches,
-        "batters_faced": batters_seen + 1,
-        "path": path,
-    }
+    if just_return_mult:
+        return multiplier
+    else:
+        return {
+            "final_multiplier": multiplier,
+            "total_pitches": total_pitches,
+            "batters_faced": batters_seen + 1,
+            "path": path,
+        }
 
 
 def run_simulations(
@@ -128,20 +133,30 @@ def run_simulations(
 
     rng = np.random.default_rng(seed)
 
+    # Precompute per-batter matchup rates and pitch distributions once per run.
+    matchups = precompute_matchups(
+        pitcher=pitcher,
+        batters=batters,
+        league=None,
+        use_expected=use_expected,
+    )
+
     results = np.empty(n_sims, dtype=float)
     for i in range(n_sims):
         # Use a child RNG so each sim is independent but the whole run is reproducible
         child_rng = np.random.default_rng(rng.integers(0, 2**63))
-        sim = simulate_moonshot_round(
+        mult = simulate_moonshot_round(
             pitcher=pitcher,
             batters=batters,
+            matchups=matchups,
             starting_batter_idx=starting_batter_idx,
             rng=child_rng,
             use_expected=use_expected,
+            just_return_mult=True,
         )
-        results[i] = sim["final_multiplier"]
+        results[i] = mult
 
-    summary = {
+    summary: Dict[str, Any] = {
         "mean": float(np.mean(results)),
         "median": float(np.median(results)),
         "std": float(np.std(results)),
@@ -152,7 +167,7 @@ def run_simulations(
         "max": float(np.max(results)),
     }
 
-    reach = {}
+    reach: Dict[Any, float] = {}
     for t in targets:
         p = float(np.mean(results >= t))
         reach[t] = p
@@ -160,12 +175,48 @@ def run_simulations(
 
     summary["best_ev"] = max(reach.get(f"EV_{t}x", -np.inf) for t in targets)
     summary["best_mult"] = max(targets, key=lambda t: reach.get(f"EV_{t}x", -np.inf))
+    summary["targets"] = targets
 
     summary["reach"] = reach
     summary["raw"] = results          # keep the full array if you want histograms later
-    summary["targets"] = list(targets)
     return summary
 
+
+def _evaluate_starting_batter(args):
+    (
+        pitcher,
+        batters,
+        start_idx,
+        n_sims,
+        targets,
+        seed,
+        use_expected,
+    ) = args
+
+    summary = run_simulations(
+        pitcher=pitcher,
+        batters=batters,
+        n_sims=n_sims,
+        targets=targets,
+        seed=seed + start_idx,
+        use_expected=use_expected,
+        starting_batter_idx=start_idx,
+    )
+
+    batter_full = " ".join(batters[start_idx].name.split(", ")[::-1])
+
+    return {
+        "starting_idx": start_idx,
+        "batter_name": batter_full,
+        "best_ev": summary["best_ev"],
+        "best_mult": summary["best_mult"],
+        "mean": summary["mean"],
+        "median": summary["median"],
+        "p90": summary["p90"],
+        "p95": summary["p95"],
+        "raw": summary["raw"],
+        "targets": summary["targets"],
+    }
 
 def find_optimal_starting_batter(
     pitcher: Pitcher,
@@ -177,62 +228,54 @@ def find_optimal_starting_batter(
     seed: int = 42,
     use_expected: bool = True,
 ) -> Dict[str, Any]:
-    """
-    For every possible starting batter, find the multiplier that gives the highest EV.
-    Returns ranking sorted by that best EV.
-    """
-    targets = np.arange(min_mult, max_mult + step, step).tolist()
 
-    results_by_start = []
-    best_score = -np.inf
-    best_idx = 0
-    best_summary = None
+    targets = np.arange(
+        min_mult,
+        max_mult + step,
+        step,
+    ).tolist()
 
-    for start_idx in range(len(batters)):
-        batter_full = " ".join(batters[start_idx].name.split(", ")[::-1])
-        print(f"Testing starting batter {start_idx}: {batter_full}...")
+    args = [
+        (
+            pitcher,
+            batters,
+            start_idx,
+            n_sims,
+            targets,
+            seed,
+            use_expected,
+        )
+        for start_idx in range(len(batters))
+    ]
 
-        summary = run_simulations(
-            pitcher=pitcher,
-            batters=batters,
-            n_sims=n_sims,
-            targets=targets,
-            seed=seed + start_idx,
-            use_expected=use_expected,
-            starting_batter_idx=start_idx,
+    with ProcessPoolExecutor() as executor:
+        results_by_start = list(
+            executor.map(_evaluate_starting_batter, args)
         )
 
-        # best_ev and best_mult are already calculated inside run_simulations
-        best_ev = summary["best_ev"]
-        best_mult = summary["best_mult"]
-
-        results_by_start.append({
-            "starting_idx": start_idx,
-            "batter_name": batter_full,
-            "best_ev": best_ev,
-            "best_mult": best_mult,
-            "mean": summary["mean"],
-            "median": summary["median"],
-            "p90": summary["p90"],
-            "p95": summary["p95"],
-            "raw": summary["raw"],
-            "targets": summary["targets"],
-        })
-
-        if best_ev > best_score:
-            best_score = best_ev
-            best_idx = start_idx
-            best_summary = summary
-
     # Sort by best EV descending
-    results_by_start.sort(key=lambda x: x["best_ev"], reverse=True)
+    results_by_start.sort(
+        key=lambda x: x["best_ev"],
+        reverse=True,
+    )
+
+    best = results_by_start[0]
 
     return {
-        "best_starting_idx": best_idx,
-        "best_batter_name": batters[best_idx].name,
-        "best_ev": best_score,
-        "best_mult": best_summary["best_mult"] if best_summary else None,
-        "best_summary": best_summary,
+        "best_starting_idx": best["starting_idx"],
+        "best_batter_name": batters[best["starting_idx"]].name,
+        "best_ev": best["best_ev"],
+        "best_mult": best["best_mult"],
+        "best_summary": {
+            "best_ev": best["best_ev"],
+            "best_mult": best["best_mult"],
+            "mean": best["mean"],
+            "median": best["median"],
+            "p90": best["p90"],
+            "p95": best["p95"],
+            "raw": best["raw"],
+            "targets": best["targets"],
+        },
         "all_starts": results_by_start,
         "pitcher_name": pitcher.name,
     }

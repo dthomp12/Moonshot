@@ -87,15 +87,33 @@ if __name__ == "__main__":
         for batter_id in lineup_ids
     ]
 
+    # Set this when expected league-rate priors are available.
+    expected_league_rates = None
+    shrink_expected = expected_league_rates is not None
+
+    pitcher.shrink(
+        prior=None,
+        final_pas=100,
+        min_prior_pas=40,
+        x_prior=expected_league_rates,
+        shrink_expected=shrink_expected,
+    )
+
     for batter in lineup:
-        batter.shrink(None, prior_strength=40)
+        batter.shrink(
+            prior=None,
+            final_pas=100,
+            min_prior_pas=40,
+            x_prior=expected_league_rates,
+            shrink_expected=shrink_expected,
+        )
 
     rand_seed = np.random.randint(0, 1_000_000)
 
     opt = find_optimal_starting_batter(
         pitcher=pitcher,
         batters=lineup,
-        n_sims=50_000,
+        n_sims=100_000,
         min_mult=1.00,
         max_mult=20.0,
         seed=rand_seed,
